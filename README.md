@@ -11,8 +11,8 @@ O objetivo deste projeto é testar os limites do ESP32 para transmitir diferente
 ### Simulação
 A imagem abaixo representa uma simulação do circuito fisíco necessário para um dos ESP32, para que seja possível reproduzir acordes e melodias.
 
-<img width="716" height="662" alt="image" src="https://github.com/user-attachments/assets/059153e9-fd7e-4625-af50-ff5ee9d61856" />
+<img width="516" height="462" alt="image" src="https://github.com/user-attachments/assets/059153e9-fd7e-4625-af50-ff5ee9d61856" />
 
 Em seguida montamos o circuito físico baseando-se na simulaçao, porém utilizando resistores de 220Ohms.
 
-<img width="899" height="1599" alt="image" src="https://github.com/user-attachments/assets/f0b7f15b-155c-40f3-a598-efa659a3af75" />
+<img width="399" height="1099" alt="image" src="https://github.com/user-attachments/assets/f0b7f15b-155c-40f3-a598-efa659a3af75" />
