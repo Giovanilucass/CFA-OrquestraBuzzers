@@ -1,26 +1,27 @@
-import network
-import time
-import json
 from machine import Pin, PWM
+from time import sleep
+import ubinascii
+import network
+import espnow
 from umqtt.simple import MQTTClient
+import json
 
 # ==========================================
-# 1. CONFIGURAÇÕES DE REDE E MQTT
+# CONFIGURAÇÕES DE REDE E SERVIDOR
 # ==========================================
-WIFI_SSID = "NOME_DO_SEU_WIFI"
-WIFI_PASSWORD = "SENHA_DO_SEU_WIFI"
+WIFI_SSID = "NOME_DO_SEU_WIFI_AQUI"
+WIFI_SENHA = "SENHA_DO_SEU_WIFI_AQUI"
 
 BROKER_MQTT = "broker.hivemq.com"
-CLIENT_ID = "ESP32_Musico_01" # Se tiver mais ESP32, mude para 02, 03...
 TOPICO_PARTITURA = b"projeto/orquestra/partitura"
 TOPICO_COMANDO = b"projeto/orquestra/comando"
 
-# Variáveis globais para guardar a música recebida
-partitura_atual = []
-bpm_atual = 120
+# Variáveis globais para guardar a música recebida pela internet
+partitura_baixada = None
+bpm_baixado = 120
 
 # ==========================================
-# 2. LIMPEZA E CONFIGURAÇÃO DOS PINOS
+# 1. LIMPEZA DE SEGURANÇA (Garante que os pinos começam livres)
 # ==========================================
 pinos = [Pin(0, Pin.OUT), Pin(2, Pin.OUT), Pin(5, Pin.OUT)]
 for p in pinos:
@@ -32,7 +33,7 @@ for p in pinos:
 buzzers_ativos = []
 
 # ==========================================
-# 3. DICIONÁRIO DE NOTAS
+# 2. DICIONÁRIO DE NOTAS
 # ==========================================
 notas_padrao = {
     'C3': 131, 'C#3': 139, 'D3': 147, 'D#3': 156, 'E3': 165, 'F3': 175,
@@ -44,7 +45,7 @@ notas_padrao = {
 }
 
 # ==========================================
-# 4. MOTOR DE ÁUDIO (À Prova de Falhas de Memória)
+# 3. FUNÇÕES DE MÚSICA (A MÁGICA ESTÁ AQUI)
 # ==========================================
 def tocar_passo(notas, tempos, bpm):
     global buzzers_ativos
@@ -52,18 +53,21 @@ def tocar_passo(notas, tempos, bpm):
     duracao_segundos = tempos * segundos_por_batida
 
     if notas == "pausa":
-        time.sleep(duracao_segundos)
+        sleep(duracao_segundos)
         return
         
     for i in range(len(notas)):
         if i < 3: 
             nota = notas[i]
             if nota in notas_padrao:
+                # Aloca o timer apenas na hora de tocar
                 buzzer = PWM(pinos[i], freq=notas_padrao[nota], duty=300)
                 buzzers_ativos.append(buzzer)
 
-    time.sleep(duracao_segundos)
+    # Mantém a nota tocando pelo tempo determinado
+    sleep(duracao_segundos)
 
+    # DESTRÓI os buzzers ativos. Devolve o timer pro ESP32!
     for b in buzzers_ativos:
         try:
             b.duty(0)
@@ -72,115 +76,85 @@ def tocar_passo(notas, tempos, bpm):
             pass
             
     buzzers_ativos.clear()
-    time.sleep(0.02) 
+    sleep(0.02) 
 
-def reproduzir_musica():
-    global partitura_atual, bpm_atual
-    print(f"Tocando a {bpm_atual} BPM...")
-    for passo in partitura_atual:
-        # passo[0] são as notas, passo[1] é o tempo
-        tocar_passo(passo[0], passo[1], bpm_atual)
-    print("Música finalizada! Aguardando novas ordens...")
-
-# ==========================================
-# 5. CONEXÃO WI-FI
-# ==========================================
-def conectar_wifi():
-    wlan = network.WLAN(network.STA_IF)
-    
-    # --- LIMPEZA DE ESTADO DO WI-FI ---
-    # Desliga a antena e limpa tentativas de conexão anteriores
-    wlan.active(False)
-    time.sleep(0.5)
-    
-    wlan.active(True)
-    wlan.disconnect() # Garante que está desconectado antes de tentar conectar
-    time.sleep(0.5)
-    # ----------------------------------
-    
-    if not wlan.isconnected():
-        print(f"Conectando à rede {WIFI_SSID}...")
-        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        
-        # Adiciona um limite de tempo para não travar para sempre
-        tentativas = 0
-        while not wlan.isconnected() and tentativas < 20:
-            time.sleep(0.5)
-            print(".", end="")
-            tentativas += 1
-            
-        if wlan.isconnected():
-            print("\nWi-Fi Conectado! IP:", wlan.ifconfig()[0])
-        else:
-            print("\nErro: Tempo esgotado! Verifique o nome e a senha da rede Wi-Fi.")
+def reproduzir_musica(partitura, bpm):
+    print(f"Iniciando música a {bpm} BPM...")
+    for passo in partitura:
+        # passo[0] são as notas (ex: ["C4", "C3"]), passo[1] é o tempo (ex: 1)
+        tocar_passo(passo[0], passo[1], bpm)
+    print("Música finalizada!")
 
 # ==========================================
-# 6. LÓGICA DO MQTT (Ouvido do Músico)
+# 4. CONFIGURAÇÃO DE REDE (Wi-Fi + ESP-NOW + MQTT)
 # ==========================================
-def callback_mensagem(topico, msg):
-    """Esta função é chamada automaticamente sempre que o servidor envia algo."""
-    global partitura_atual, bpm_atual
-    
-    # Decodifica as mensagens recebidas de bytes para string
-    topico_str = topico.decode('utf-8')
-    msg_str = msg.decode('utf-8')
-    
-    if topico_str == TOPICO_PARTITURA.decode('utf-8'):
-        try:
-            # Transforma o JSON de texto de volta em um dicionário Python
-            dados = json.loads(msg_str)
-            bpm_atual = dados.get("bpm", 120)
-            partitura_atual = dados.get("partitura", [])
-            nome_musica = dados.get("musica", "Desconhecida")
-            print(f"Partitura recebida: {nome_musica} ({len(partitura_atual)} passos).")
-            print("Pronto e aguardando comando START...")
-        except ValueError:
-            print("Erro ao ler o JSON da partitura.")
-            
-    elif topico_str == TOPICO_COMANDO.decode('utf-8'):
-        if msg_str == "START":
-            if len(partitura_atual) > 0:
-                reproduzir_musica()
-            else:
-                print("Comando START ignorado: Nenhuma partitura na memória.")
+# 4.1 Conectando ao Wi-Fi
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+sta.connect(WIFI_SSID, WIFI_SENHA)
 
-def conectar_mqtt():
+print("Conectando ao Wi-Fi...")
+while not sta.isconnected():
+    sleep(0.5)
+print(f"Conectado! Canal do Wi-Fi: {sta.config('channel')}")
+
+# 4.2 Iniciando o ESP-NOW (ele herda o canal do Wi-Fi)
+e = espnow.ESPNow()
+e.active(True)
+
+# 4.3 Configurando o MQTT para baixar as partituras
+def recepcao_mqtt(topico, mensagem):
+    global partitura_baixada, bpm_baixado
+    print("\n[MQTT] Nova mensagem recebida do Maestro!")
     try:
-        client = MQTTClient(CLIENT_ID, BROKER_MQTT)
-        client.set_callback(callback_mensagem)
-        client.connect()
-        # Inscreve o ESP32 nos dois tópicos
-        client.subscribe(TOPICO_PARTITURA)
-        client.subscribe(TOPICO_COMANDO)
-        print("Conectado ao MQTT. Inscrito nos tópicos.")
-        return client
-    except Exception as e:
-        print(f"Erro ao conectar no MQTT: {e}")
-        time.sleep(5)
-        machine.reset() # Reinicia o ESP32 em caso de falha crítica
+        dados = json.loads(mensagem.decode('utf-8'))
+        partitura_baixada = dados.get("partitura")
+        bpm_baixado = dados.get("bpm", 120)
+        musica_nome = dados.get("musica", "Desconhecida")
+        print(f"-> Música '{musica_nome}' carregada na memória com sucesso!")
+    except Exception as erro:
+        print("[MQTT] Erro ao ler a partitura:", erro)
+
+id_cliente = b"tocador_" + ubinascii.hexlify(sta.config('mac'))
+
+client = MQTTClient(id_cliente, BROKER_MQTT)
+client.set_callback(recepcao_mqtt)
+client.connect()
+client.subscribe(TOPICO_PARTITURA)
+print("Inscrito no MQTT. Aguardando partituras da internet...")
 
 # ==========================================
-# 7. LOOP PRINCIPAL
+# 5. EXECUÇÃO PRINCIPAL
 # ==========================================
-conectar_wifi()
-cliente_mqtt = conectar_mqtt()
-
-print("Músico posicionado. Aguardando a partitura e a batuta do maestro...")
+print("\n🎵 Tocador 100% pronto e escutando rádio (ESP-NOW) para o START...")
 
 try:
     while True:
-        # Verifica se chegou alguma mensagem nova no MQTT
-        # Use wait_msg() para economizar energia, ele pausa o loop até chegar algo
-        cliente_mqtt.wait_msg() 
+        # 1. Verifica rapidinho se chegou partitura pelo MQTT
+        client.check_msg()
         
+        # 2. Ouve o rádio ESP-NOW para o gatilho de sincronia (START)
+        host, msg = e.irecv(timeout_ms=10) 
+        
+        if msg:
+            if msg == b'START':
+                if partitura_baixada:
+                    print(f"\n[ESP-NOW] Comando START recebido! Tocando a {bpm_baixado} BPM...")
+                    reproduzir_musica(partitura_baixada, bpm_baixado)
+                    print("Fim da música. Aguardando novas ordens...")
+                else:
+                    print("\n[ESP-NOW] Maestro mandou tocar, mas nenhuma partitura foi recebida ainda!")
+
 except KeyboardInterrupt:
-    print("\nDesconectando...")
+    print("\nVocê apertou Stop. Parando a música e desligando...")
+except Exception as erro_geral:
+    print(f"\nErro no código: {erro_geral}")
 finally:
-    # Segurança de sempre: libera os pinos
+    # Caso o código seja interrompido, limpamos os pinos com segurança
     for b in buzzers_ativos:
         try:
             b.duty(0)
             b.deinit()
         except:
             pass
-    cliente_mqtt.disconnect()
+    print("Pronto! Timers liberados com sucesso. Código limpo.")
