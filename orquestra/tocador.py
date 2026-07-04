@@ -1,19 +1,30 @@
 import network
 import time
 import json
+import gc
 from machine import Pin, PWM
-from umqtt.simple import MQTTClient
+from umqtt import MQTTClient
 
 # ==========================================
 # 1. CONFIGURAÇÕES DE REDE E MQTT
 # ==========================================
-WIFI_SSID = "NOME_DO_SEU_WIFI"
-WIFI_PASSWORD = "SENHA_DO_SEU_WIFI"
+WIFI_SSID = "lab8"
+WIFI_PASSWORD = "lab8arduino"
 
 BROKER_MQTT = "broker.hivemq.com"
 CLIENT_ID = "ESP32_Musico_01" # Se tiver mais ESP32, mude para 02, 03...
 TOPICO_PARTITURA = b"projeto/orquestra/partitura"
 TOPICO_COMANDO = b"projeto/orquestra/comando"
+TOPICO_SYNC_REQ = b"projeto/orquestra/sync/req"
+TOPICO_SYNC_RES = b"projeto/orquestra/sync/res"
+TOPICO_SYNC_ADJ = b"projeto/orquestra/sync/adj"
+
+offset_tempo = 0 # Guarda o ajuste calculado pelo Berkeley
+deve_tocar_musica = False
+
+def tempo_global_atual():
+    # Relógio Global = Relógio de Hardware + Ajuste do Maestro
+    return time.ticks_ms() + offset_tempo
 
 # Variáveis globais para guardar a música recebida
 partitura_atual = []
@@ -81,6 +92,15 @@ def reproduzir_musica():
         # passo[0] são as notas, passo[1] é o tempo
         tocar_passo(passo[0], passo[1], bpm_atual)
     print("Música finalizada! Aguardando novas ordens...")
+    
+    for b in buzzers_ativos:
+        try:
+            b.duty(0)
+            b.deinit()
+        except Exception as e:
+            print(f"Erro ao limpar PWM: {e}")
+            
+    print("Música finalizada e timers liberados com sucesso.")
 
 # ==========================================
 # 5. CONEXÃO WI-FI
@@ -118,46 +138,71 @@ def conectar_wifi():
 # 6. LÓGICA DO MQTT (Ouvido do Músico)
 # ==========================================
 def callback_mensagem(topico, msg):
-    """Esta função é chamada automaticamente sempre que o servidor envia algo."""
-    global partitura_atual, bpm_atual
+    global partitura_atual, bpm_atual, offset_tempo
+    global deve_tocar_musica
     
-    # Decodifica as mensagens recebidas de bytes para string
     topico_str = topico.decode('utf-8')
     msg_str = msg.decode('utf-8')
     
-    if topico_str == TOPICO_PARTITURA.decode('utf-8'):
+    # 1. Maestro pediu que horas são
+    if topico_str == TOPICO_SYNC_REQ.decode('utf-8'):
+        resposta = json.dumps({"id": CLIENT_ID, "t": time.ticks_ms()})
+        cliente_mqtt.publish(TOPICO_SYNC_RES, resposta)
+        print("Relógio local enviado para o Maestro.")
+        
+    # 2. Maestro enviou o ajuste do relógio
+    elif topico_str == TOPICO_SYNC_ADJ.decode('utf-8'):
+        dados = json.loads(msg_str)
+        # Verifica se o ajuste de tempo é para este ESP32 específico
+        if dados.get("id") == CLIENT_ID:
+            offset_tempo = dados.get("offset_ms", 0)
+            print(f"Relógio Global sincronizado! Offset: {offset_tempo}")
+
+    # 3. Maestro enviou a partitura
+    elif topico_str == TOPICO_PARTITURA.decode('utf-8'):
         try:
-            # Transforma o JSON de texto de volta em um dicionário Python
             dados = json.loads(msg_str)
             bpm_atual = dados.get("bpm", 120)
             partitura_atual = dados.get("partitura", [])
-            nome_musica = dados.get("musica", "Desconhecida")
-            print(f"Partitura recebida: {nome_musica} ({len(partitura_atual)} passos).")
-            print("Pronto e aguardando comando START...")
+            print(f"Partitura recebida. Aguardando comando START...")
         except ValueError:
             print("Erro ao ler o JSON da partitura.")
             
+    # 4. Maestro enviou a ordem de início agendada
     elif topico_str == TOPICO_COMANDO.decode('utf-8'):
-        if msg_str == "START":
-            if len(partitura_atual) > 0:
-                reproduzir_musica()
-            else:
-                print("Comando START ignorado: Nenhuma partitura na memória.")
+        try:
+            dados = json.loads(msg_str)
+            if dados.get("comando") == "START":
+                start_at = dados.get("start_at")
+                deve_tocar_musica = True
+                print(f"Ordem recebida! A música começará no instante global: {start_at}")
+                
+                # Trava o processador em um loop muito rápido até atingir a hora certa
+                while tempo_global_atual() < start_at:
+                    time.sleep(0.001) # Espera 1ms por ciclo
+                    
+                if len(partitura_atual) > 0:
+                    reproduzir_musica()
+        except ValueError:
+            pass # Ignora mensagens fora do padrão JSON
 
 def conectar_mqtt():
     try:
         client = MQTTClient(CLIENT_ID, BROKER_MQTT)
         client.set_callback(callback_mensagem)
         client.connect()
-        # Inscreve o ESP32 nos dois tópicos
+        # Inscreve o ESP32 nos tópicos antigos e nos novos de sincronização
         client.subscribe(TOPICO_PARTITURA)
         client.subscribe(TOPICO_COMANDO)
+        client.subscribe(TOPICO_SYNC_REQ)
+        client.subscribe(TOPICO_SYNC_ADJ)
         print("Conectado ao MQTT. Inscrito nos tópicos.")
         return client
     except Exception as e:
         print(f"Erro ao conectar no MQTT: {e}")
         time.sleep(5)
-        machine.reset() # Reinicia o ESP32 em caso de falha crítica
+        import machine
+        machine.reset()
 
 # ==========================================
 # 7. LOOP PRINCIPAL
@@ -169,12 +214,18 @@ print("Músico posicionado. Aguardando a partitura e a batuta do maestro...")
 
 try:
     while True:
-        # Verifica se chegou alguma mensagem nova no MQTT
-        # Use wait_msg() para economizar energia, ele pausa o loop até chegar algo
-        cliente_mqtt.wait_msg() 
+        cliente_mqtt.check_msg() # Ouve o maestro
         
+        # Se a flag de tocar música for ativada
+        if deve_tocar_musica:
+            deve_tocar_musica = False
+            # Força a limpeza da RAM e dos processos órfãos logo após tocar
+            gc.collect() 
+            
 except KeyboardInterrupt:
     print("\nDesconectando...")
+except OSError as e:
+    print("Erro de rede. Reconectando...")
 finally:
     # Segurança de sempre: libera os pinos
     for b in buzzers_ativos:
