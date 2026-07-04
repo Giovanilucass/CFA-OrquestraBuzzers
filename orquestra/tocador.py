@@ -2,6 +2,8 @@ import network
 import time
 import json
 import gc
+import machine
+import ubinascii
 from machine import Pin, PWM
 from umqtt import MQTTClient
 
@@ -12,7 +14,12 @@ WIFI_SSID = "lab8"
 WIFI_PASSWORD = "lab8arduino"
 
 BROKER_MQTT = "broker.hivemq.com"
-CLIENT_ID = "ESP32_Musico_01" # Se tiver mais ESP32, mude para 02, 03...
+
+id_hardware = ubinascii.hexlify(machine.unique_id()).decode('utf-8')
+CLIENT_ID = f"musico_{id_hardware}"
+
+print(f"Iniciando tocador com ID Único: {CLIENT_ID}")
+
 TOPICO_PARTITURA = b"projeto/orquestra/partitura"
 TOPICO_COMANDO = b"projeto/orquestra/comando"
 TOPICO_SYNC_REQ = b"projeto/orquestra/sync/req"
