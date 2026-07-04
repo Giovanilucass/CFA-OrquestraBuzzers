@@ -22,7 +22,7 @@ class Maestro:
         self.client = None
         self.conectado = False
         self.clientes_tempos = {}
-        self.destinos = destinos or ["ESP32_Musico_01", "ESP32_Musico_02"]
+        self.destinos = list(destinos or [])
 
     def _resolver_caminho_partituras(self, caminho_partituras):
         if caminho_partituras is None:
@@ -102,6 +102,16 @@ class Maestro:
             }
             print(f"Resposta de sincronização recebida de '{cliente_id}'.")
 
+    def _resolver_destino_para_parte(self, indice):
+        if self.destinos and indice < len(self.destinos):
+            return self.destinos[indice]
+
+        clientes_descobertos = list(self.clientes_tempos.keys())
+        if indice < len(clientes_descobertos):
+            return clientes_descobertos[indice]
+
+        return None
+
     def conectar(self):
         if mqtt is None:
             raise RuntimeError("A biblioteca paho-mqtt não está instalada.")
@@ -131,7 +141,7 @@ class Maestro:
         self.client.publish(TOPICO_SYNC_REQ, "SYNC")
 
         print("Aguardando respostas dos músicos...")
-        time.sleep(20)
+        time.sleep(10)
 
         t_agora_ms = int(time.time() * 1000)
         tempos_estimados = [t_agora_ms]
@@ -170,7 +180,7 @@ class Maestro:
             partes = list(partitura.items())
             print(f"Enviando '{nome_musica}' em {len(partes)} partes...")
             for indice, (nome_parte, trecho) in enumerate(partes):
-                destino = self.destinos[indice] if indice < len(self.destinos) else None
+                destino = self._resolver_destino_para_parte(indice)
                 pacote = {
                     "bpm": bpm,
                     "musica": nome_musica,
