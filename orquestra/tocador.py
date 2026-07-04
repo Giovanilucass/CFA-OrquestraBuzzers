@@ -162,9 +162,14 @@ def callback_mensagem(topico, msg):
     elif topico_str == TOPICO_PARTITURA.decode('utf-8'):
         try:
             dados = json.loads(msg_str)
+            destino = dados.get("destino")
+            if destino and destino != CLIENT_ID:
+                print(f"Partitura ignorada para outro destino: {destino}")
+                return
+
             bpm_atual = dados.get("bpm", 120)
             partitura_atual = dados.get("partitura", [])
-            print(f"Partitura recebida. Aguardando comando START...")
+            print(f"Partitura recebida para {CLIENT_ID}. Aguardando comando START...")
         except ValueError:
             print("Erro ao ler o JSON da partitura.")
             

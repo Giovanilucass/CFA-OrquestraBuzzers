@@ -14,27 +14,63 @@ TOPICO_SYNC_ADJ = "projeto/orquestra/sync/adj"
 
 
 class Maestro:
-    def __init__(self, broker=BROKER, porta=PORTA, caminho_partituras=None):
+    def __init__(self, broker=BROKER, porta=PORTA, caminho_partituras=None, destinos=None):
         self.broker = broker
         self.porta = porta
-        self.caminho_partituras = caminho_partituras or Path(__file__).with_name("partituras.json")
+        self.caminho_partituras = self._resolver_caminho_partituras(caminho_partituras)
         self.partituras = {}
         self.client = None
         self.conectado = False
         self.clientes_tempos = {}
+        self.destinos = destinos or ["ESP32_Musico_01", "ESP32_Musico_02"]
 
-    def ler_partituras_do_arquivo(self):
-        print(f"Lendo as partituras do arquivo '{self.caminho_partituras}'...")
+    def _resolver_caminho_partituras(self, caminho_partituras):
+        if caminho_partituras is None:
+            return Path(__file__).resolve().parent / "repertorio"
+
+        caminho = Path(caminho_partituras).expanduser()
+        if not caminho.is_absolute():
+            caminho = (Path(__file__).resolve().parent / caminho).resolve()
+        return caminho
+
+    def _carregar_partitura_do_arquivo(self, caminho):
+        print(f"Lendo a partitura do arquivo '{caminho}'...")
         try:
-            with self.caminho_partituras.open("r", encoding="utf-8") as arquivo:
-                self.partituras = json.load(arquivo)
-                return self.partituras
+            with caminho.open("r", encoding="utf-8") as arquivo:
+                dados = json.load(arquivo)
         except FileNotFoundError:
-            print(f"ERRO: Arquivo '{self.caminho_partituras}' não encontrado.")
+            print(f"ERRO: Arquivo '{caminho}' não encontrado.")
             return {}
         except ValueError:
             print("ERRO: O arquivo possui JSON inválido.")
             return {}
+
+        if isinstance(dados, dict):
+            return {caminho.stem: dados}
+
+        if isinstance(dados, list):
+            return {caminho.stem: dados}
+
+        print(f"ERRO: O conteúdo de '{caminho}' não é uma partitura válida.")
+        return {}
+
+    def ler_partituras_do_arquivo(self):
+        caminho = self.caminho_partituras
+        if not caminho.exists():
+            print(f"ERRO: Caminho '{caminho}' não encontrado.")
+            self.partituras = {}
+            return {}
+
+        if caminho.is_dir():
+            print(f"Lendo as partituras da pasta '{caminho}'...")
+            partituras = {}
+            for arquivo_json in sorted(caminho.glob("*.json")):
+                partituras.update(self._carregar_partitura_do_arquivo(arquivo_json))
+            self.partituras = partituras
+            return self.partituras
+
+        self.partituras = self._carregar_partitura_do_arquivo(caminho)
+        return self.partituras
 
     def listar_musicas(self):
         if not self.partituras:
@@ -95,7 +131,7 @@ class Maestro:
         self.client.publish(TOPICO_SYNC_REQ, "SYNC")
 
         print("Aguardando respostas dos músicos...")
-        time.sleep(10)
+        time.sleep(20)
 
         t_agora_ms = int(time.time() * 1000)
         tempos_estimados = [t_agora_ms]
@@ -114,6 +150,7 @@ class Maestro:
             print("Nenhum músico respondeu. Usando o tempo local do maestro.")
 
         for cid, dados in self.clientes_tempos.items():
+            print("Publicando SYNC_ADJ para", cid)
             offset = tempo_medio - dados["t_estimado"]
             payload = json.dumps({"id": cid, "offset_ms": int(offset)})
             self.client.publish(TOPICO_SYNC_ADJ, payload)
@@ -127,17 +164,39 @@ class Maestro:
             return
 
         tempo_global = self.sincronizar()
+        partitura = self.partituras[nome_musica]
 
-        pacote = {
-            "bpm": bpm,
-            "musica": nome_musica,
-            "partitura": self.partituras[nome_musica],
-        }
-
-        payload_json = json.dumps(pacote)
-        print(f"Enviando '{nome_musica}' no tópico '{TOPICO_PARTITURA}'...")
-        self.client.publish(TOPICO_PARTITURA, payload_json)
-        time.sleep(1)
+        if isinstance(partitura, dict) and partitura:
+            partes = list(partitura.items())
+            print(f"Enviando '{nome_musica}' em {len(partes)} partes...")
+            for indice, (nome_parte, trecho) in enumerate(partes):
+                destino = self.destinos[indice] if indice < len(self.destinos) else None
+                pacote = {
+                    "bpm": bpm,
+                    "musica": nome_musica,
+                    "parte": nome_parte,
+                    "partes_totais": len(partes),
+                    "destino": destino,
+                    "partitura": trecho,
+                }
+                payload_json = json.dumps(pacote)
+                destino_texto = destino or "todos"
+                print(f"  -> Parte '{nome_parte}' enviada para '{destino_texto}'.")
+                self.client.publish(TOPICO_PARTITURA, payload_json)
+                time.sleep(1)
+        else:
+            pacote = {
+                "bpm": bpm,
+                "musica": nome_musica,
+                "parte": "principal",
+                "partes_totais": 1,
+                "destino": None,
+                "partitura": partitura,
+            }
+            payload_json = json.dumps(pacote)
+            print(f"Enviando '{nome_musica}' no tópico '{TOPICO_PARTITURA}'...")
+            self.client.publish(TOPICO_PARTITURA, payload_json)
+            time.sleep(1)
 
         start_at = int(tempo_global + 5000)
         comando = json.dumps({"comando": "START", "start_at": start_at})
