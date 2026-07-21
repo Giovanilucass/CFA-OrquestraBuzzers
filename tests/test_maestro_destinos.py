@@ -6,7 +6,7 @@ from podio.maestro import Maestro, TOPICO_PARTITURA
 
 
 class MaestroDestinosTests(unittest.TestCase):
-    def test_usa_ids_descobertos_da_sincronizacao_quando_nao_houve_destinos_hardcoded(self):
+    def test_usa_ids_descobertos_da_sincronizacao_quando_nao_houve_destinos_hardcoded(self) -> None:
         maestro = Maestro(caminho_partituras="podio/repertorio", destinos=None)
         maestro.partituras = {
             "teste": {
@@ -22,7 +22,7 @@ class MaestroDestinosTests(unittest.TestCase):
         publicados = []
 
         class FakeClient:
-            def publish(self, topic, payload):
+            def publish(self, topic: str, payload: str) -> None:
                 publicados.append((topic, payload))
 
         maestro.client = FakeClient()

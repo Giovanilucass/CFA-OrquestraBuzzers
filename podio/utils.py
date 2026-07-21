@@ -1,6 +1,7 @@
 import music21
 import json
 import os
+from typing import Any, List
 
 # Dicionário de notas permitidas pelo seu sistema
 CHAVES_PERMITIDAS = [
@@ -42,7 +43,7 @@ def extrair_compassos(part):
     Percorre todos os elementos da pauta em ordem temporal e extrai 
     notas, acordes e pausas no formato [["Nota"], duracao].
     """
-    resultado = []
+    resultado: List[Any] = []
     
     # flat.notesAndRests retira subdivisões de compassos e entrega tudo linearmente
     for elemento in part.flatten().notesAndRests:
@@ -66,7 +67,12 @@ def extrair_compassos(part):
             
     return resultado
 
-def converter_mxl_para_json(caminho_mxl, caminho_saida='partitura_convertida.json'):
+def converter_mxl_para_json(caminho_mxl: str, caminho_saida: str = 'partitura_convertida.json') -> None:
+    """Converte um arquivo .mxl para uma representação JSON das partes.
+
+    Gera um arquivo JSON com as chaves 'clave_de_sol' e 'clave_de_fa' quando
+    essas partes existirem.
+    """
     print(f"Processando '{caminho_mxl}'...")
     
     if not os.path.exists(caminho_mxl):
@@ -76,7 +82,7 @@ def converter_mxl_para_json(caminho_mxl, caminho_saida='partitura_convertida.jso
     # O music21 descompacta e lê o arquivo .mxl automaticamente
     partitura = music21.converter.parse(caminho_mxl)
     
-    dados_json = {}
+    dados_json: dict = {}
     
     # Assumimos que partitura.parts[0] é a Clave de Sol e parts[1] é a Clave de Fá
     if len(partitura.parts) >= 1:

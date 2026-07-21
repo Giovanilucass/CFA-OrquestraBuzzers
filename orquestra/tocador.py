@@ -6,6 +6,7 @@ import machine
 import ubinascii
 import _thread
 from machine import Pin, PWM
+from typing import Any, List, Union
 from umqtt import MQTTClient
 
 # ==========================================
@@ -29,7 +30,12 @@ TOPICO_SYNC_ADJ = b"projeto/orquestra/sync/adj"
 
 offset_tempo = 0  # Guarda o ajuste calculado pelo Berkeley
 
-def tempo_global_atual():
+def tempo_global_atual() -> int:
+    """Retorna o timestamp global em milissegundos.
+
+    O relógio global é o contador de ticks do hardware mais o offset do maestro
+    (ver `offset_tempo`). O valor retornado está em milissegundos.
+    """
     # Relógio Global = Relógio de Hardware + Ajuste do Maestro
     return time.ticks_ms() + offset_tempo
 
@@ -96,7 +102,12 @@ def _dormir_interruptivel(duracao_ms):
         decorrido += fatia
     return parar_flag
 
-def _desligar_buzzers_ativos():
+def _desligar_buzzers_ativos() -> None:
+    """Desliga e desaloca todos os buzzers PWM ativos.
+
+    Esta função é thread-safe e adquire `lock` antes de modificar a lista
+    compartilhada `buzzers_ativos`.
+    """
     global buzzers_ativos
     lock.acquire()
     try:
@@ -132,7 +143,15 @@ def ajustar_volume(delta):
         lock.release()
     print(f"Volume ajustado! duty={duty_atual}")
 
-def tocar_passo(notas, tempos, bpm):
+def tocar_passo(notas: Union[str, List[str]], tempos: float, bpm: int) -> bool:
+    """Toca um único passo (nota ou acorde) pela duração definida em `tempos`.
+
+    - `notas` pode ser a string 'pausa' ou uma lista de nomes de notas (ex.: ['C4']).
+    - `tempos` é o comprimento da nota em batidas (estilo quarterLength).
+    - `bpm` é usado para converter batidas em milissegundos.
+
+    Retorna True se a reprodução foi interrompida por `parar_flag`, caso contrário False.
+    """
     global buzzers_ativos, duty_atual
     segundos_por_batida = 60.0 / bpm
     duracao_ms = int(tempos * segundos_por_batida * 1000)
@@ -157,7 +176,12 @@ def tocar_passo(notas, tempos, bpm):
     time.sleep_ms(20)
     return interrompido
 
-def reproduzir_musica():
+def reproduzir_musica() -> None:
+    """Reproduz sequencialmente a `partitura_atual` global.
+
+    Respeita `parar_flag` para interromper a reprodução. Garante que os buzzers
+    sejam desligados ao sair e limpa o estado `tocando`.
+    """
     global partitura_atual, bpm_atual, tocando, parar_flag
     print(f"Tocando a {bpm_atual} BPM...")
     for passo in partitura_atual:
@@ -200,7 +224,7 @@ def _executar_reproducao_agendada(start_at):
 # ==========================================
 # 6. CONEXÃO WI-FI
 # ==========================================
-def conectar_wifi():
+def conectar_wifi() -> None:
     wlan = network.WLAN(network.STA_IF)
 
     # --- LIMPEZA DE ESTADO DO WI-FI ---
@@ -232,7 +256,12 @@ def conectar_wifi():
 # ==========================================
 # 7. LÓGICA DO MQTT (Ouvido do Músico)
 # ==========================================
-def callback_mensagem(topico, msg):
+def callback_mensagem(topico: bytes, msg: bytes) -> None:
+    """Callback MQTT que processa sincronização, partitura e comandos de controle.
+
+    - `topico` e `msg` são bytes brutos recebidos do cliente MQTT e são decodificados
+      para UTF-8 dentro do tratador.
+    """
     global partitura_atual, bpm_atual, offset_tempo
     global tocando, parar_flag
 
@@ -305,7 +334,7 @@ def callback_mensagem(topico, msg):
             passo = dados.get("passo", VOLUME_PASSO_PADRAO)
             ajustar_volume(-passo)
 
-def conectar_mqtt():
+def conectar_mqtt() -> Any:
     try:
         client = MQTTClient(CLIENT_ID, BROKER_MQTT)
         client.set_callback(callback_mensagem)

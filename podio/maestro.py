@@ -2,6 +2,7 @@ import json
 import time
 from pathlib import Path
 import paho.mqtt.client as mqtt
+from typing import Any, Dict, List, Optional, Iterable, Union
 
 BROKER = "broker.hivemq.com"
 PORTA = 1883
@@ -17,17 +18,30 @@ VOLUME_PASSO_PADRAO = 100
 
 
 class Maestro:
-    def __init__(self, broker=BROKER, porta=PORTA, caminho_partituras=None, destinos=None):
+    """Controlador Maestro: lê partituras, sincroniza músicos e publica comandos.
+
+    Atributos:
+        partituras: mapeamento de nome da música para seus dados (dict ou list)
+        clientes_tempos: mapeamento de IDs de clientes descobertos para suas informações de tempo
+    """
+
+    def __init__(
+        self,
+        broker: str = BROKER,
+        porta: int = PORTA,
+        caminho_partituras: Optional[Union[str, Path]] = None,
+        destinos: Optional[Iterable[str]] = None,
+    ) -> None:
         self.broker = broker
         self.porta = porta
         self.caminho_partituras = self._resolver_caminho_partituras(caminho_partituras)
-        self.partituras = {}
-        self.client = None
+        self.partituras: Dict[str, Any] = {}
+        self.client: Optional[Any] = None
         self.conectado = False
-        self.clientes_tempos = {}
+        self.clientes_tempos: Dict[str, Any] = {}
         self.destinos = list(destinos or [])
 
-    def _resolver_caminho_partituras(self, caminho_partituras):
+    def _resolver_caminho_partituras(self, caminho_partituras: Optional[Union[str, Path]]) -> Path:
         if caminho_partituras is None:
             return Path(__file__).resolve().parent / "repertorio"
 
@@ -36,7 +50,11 @@ class Maestro:
             caminho = (Path(__file__).resolve().parent / caminho).resolve()
         return caminho
 
-    def _carregar_partitura_do_arquivo(self, caminho):
+    def _carregar_partitura_do_arquivo(self, caminho: Path) -> Dict[str, Any]:
+        """Carrega um arquivo JSON de partitura e retorna um mapeamento {nome: dados}.
+
+        Retorna dicionário vazio em caso de erro.
+        """
         print(f"Lendo a partitura do arquivo '{caminho}'...")
         try:
             with caminho.open("r", encoding="utf-8") as arquivo:
@@ -57,7 +75,7 @@ class Maestro:
         print(f"ERRO: O conteúdo de '{caminho}' não é uma partitura válida.")
         return {}
 
-    def ler_partituras_do_arquivo(self):
+    def ler_partituras_do_arquivo(self) -> Dict[str, Any]:
         caminho = self.caminho_partituras
         if not caminho.exists():
             print(f"ERRO: Caminho '{caminho}' não encontrado.")
@@ -75,19 +93,19 @@ class Maestro:
         self.partituras = self._carregar_partitura_do_arquivo(caminho)
         return self.partituras
 
-    def listar_musicas(self):
+    def listar_musicas(self) -> List[str]:
         if not self.partituras:
             self.ler_partituras_do_arquivo()
         return sorted(self.partituras.keys())
 
-    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+    def _on_connect(self, client: Any, userdata: Any, flags: Any, reason_code: int, properties: Any = None) -> None:
         if reason_code == 0:
             self.conectado = True
             print(f"Conectado ao broker MQTT ({self.broker}:{self.porta}).")
         else:
             print(f"Falha ao conectar ao broker MQTT. Código: {reason_code}")
 
-    def _on_message(self, client, userdata, msg):
+    def _on_message(self, client: Any, userdata: Any, msg: Any) -> None:
         if msg.topic != TOPICO_SYNC_RES:
             return
 
@@ -105,7 +123,7 @@ class Maestro:
             }
             print(f"Resposta de sincronização recebida de '{cliente_id}'.")
 
-    def _resolver_destino_para_parte(self, indice):
+    def _resolver_destino_para_parte(self, indice: int) -> Optional[str]:
         if self.destinos and indice < len(self.destinos):
             return self.destinos[indice]
 
@@ -115,7 +133,7 @@ class Maestro:
 
         return None
 
-    def conectar(self):
+    def conectar(self) -> None:
         if mqtt is None:
             raise RuntimeError("A biblioteca paho-mqtt não está instalada.")
 
@@ -134,7 +152,12 @@ class Maestro:
         while not self.conectado:
             time.sleep(0.1)
 
-    def sincronizar(self):
+    def sincronizar(self) -> int:
+        """Executa o algoritmo de sincronização de Berkeley e retorna o tempo global calculado em ms.
+
+        Publica requisições SYNC e aguarda respostas, calcula o tempo médio estimado e publica
+        ajustes de offset para os clientes.
+        """
         if self.client is None:
             raise RuntimeError("O maestro ainda não está conectado ao MQTT.")
 
@@ -171,7 +194,7 @@ class Maestro:
         time.sleep(1)
         return int(tempo_medio)
 
-    def enviar_musica(self, nome_musica, bpm=140):
+    def enviar_musica(self, nome_musica: str, bpm: int = 140) -> None:
         if nome_musica not in self.partituras:
             print(f"Música '{nome_musica}' não encontrada.")
             return
@@ -216,7 +239,7 @@ class Maestro:
         print(f"Comando enviado! A música começará em {start_at}.")
         self.client.publish(TOPICO_COMANDO, comando)
 
-    def enviar_parar(self):
+    def enviar_parar(self) -> None:
         """Publica um STOP no tópico de comando, de forma orientada a
         eventos: os tocadores recebem e interrompem a música imediatamente,
         sem precisar que o maestro espere a música terminar."""
@@ -227,7 +250,7 @@ class Maestro:
         self.client.publish(TOPICO_COMANDO, comando)
         print("Comando STOP enviado! A música será interrompida nos tocadores.")
 
-    def ajustar_volume(self, aumentar=True, passo=VOLUME_PASSO_PADRAO):
+    def ajustar_volume(self, aumentar: bool = True, passo: int = VOLUME_PASSO_PADRAO) -> None:
         """Publica VOLUME_UP/VOLUME_DOWN. Nos tocadores, esse comando é
         tratado em paralelo (thread separada) à reprodução da música, para
         não travar nem desincronizar as notas em execução."""
@@ -240,7 +263,7 @@ class Maestro:
         direcao = "aumentado" if aumentar else "diminuído"
         print(f"Comando enviado! Volume será {direcao} em {passo} (duty).")
 
-    def executar(self):
+    def executar(self) -> None:
         self.ler_partituras_do_arquivo()
         self.conectar()
 
@@ -294,7 +317,7 @@ class Maestro:
 
         self.encerrar()
 
-    def encerrar(self):
+    def encerrar(self) -> None:
         if self.client is not None:
             self.client.loop_stop()
             self.client.disconnect()
