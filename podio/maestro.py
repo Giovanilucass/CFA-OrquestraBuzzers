@@ -12,6 +12,9 @@ TOPICO_SYNC_REQ = "projeto/orquestra/sync/req"
 TOPICO_SYNC_RES = "projeto/orquestra/sync/res"
 TOPICO_SYNC_ADJ = "projeto/orquestra/sync/adj"
 
+# Passo padrão de volume (duty). O duty dos buzzers vai de 0 até 1000.
+VOLUME_PASSO_PADRAO = 100
+
 
 class Maestro:
     def __init__(self, broker=BROKER, porta=PORTA, caminho_partituras=None, destinos=None):
@@ -213,25 +216,68 @@ class Maestro:
         print(f"Comando enviado! A música começará em {start_at}.")
         self.client.publish(TOPICO_COMANDO, comando)
 
+    def enviar_parar(self):
+        """Publica um STOP no tópico de comando, de forma orientada a
+        eventos: os tocadores recebem e interrompem a música imediatamente,
+        sem precisar que o maestro espere a música terminar."""
+        if self.client is None:
+            raise RuntimeError("O maestro ainda não está conectado ao MQTT.")
+
+        comando = json.dumps({"comando": "STOP"})
+        self.client.publish(TOPICO_COMANDO, comando)
+        print("Comando STOP enviado! A música será interrompida nos tocadores.")
+
+    def ajustar_volume(self, aumentar=True, passo=VOLUME_PASSO_PADRAO):
+        """Publica VOLUME_UP/VOLUME_DOWN. Nos tocadores, esse comando é
+        tratado em paralelo (thread separada) à reprodução da música, para
+        não travar nem desincronizar as notas em execução."""
+        if self.client is None:
+            raise RuntimeError("O maestro ainda não está conectado ao MQTT.")
+
+        comando_tipo = "VOLUME_UP" if aumentar else "VOLUME_DOWN"
+        comando = json.dumps({"comando": comando_tipo, "passo": passo})
+        self.client.publish(TOPICO_COMANDO, comando)
+        direcao = "aumentado" if aumentar else "diminuído"
+        print(f"Comando enviado! Volume será {direcao} em {passo} (duty).")
+
     def executar(self):
         self.ler_partituras_do_arquivo()
         self.conectar()
 
-        print("Maestro online. Digite 's' para sair.")
+        print("Maestro online.")
+        print(
+            "Comandos: número da música | 'p' parar | '+' aumentar volume | "
+            "'-' diminuir volume | 's' sair"
+        )
         while True:
             musicas = self.listar_musicas()
             print("\nMúsicas disponíveis:")
             for indice, nome in enumerate(musicas, start=1):
                 print(f"  {indice}. {nome}")
 
-            escolha = input("Escolha o número da música: ").strip().lower()
+            escolha = input(
+                "Escolha o número da música (ou 'p'/'+'/'-'/'s'): "
+            ).strip().lower()
+
             if escolha in {"s", "q", "quit", "exit"}:
                 break
+
+            if escolha in {"p", "parar", "stop"}:
+                self.enviar_parar()
+                continue
+
+            if escolha in {"+", "vol+", "volume+"}:
+                self.ajustar_volume(aumentar=True)
+                continue
+
+            if escolha in {"-", "vol-", "volume-"}:
+                self.ajustar_volume(aumentar=False)
+                continue
 
             try:
                 indice = int(escolha) - 1
             except ValueError:
-                print("Escolha inválida. Digite um número ou 's' para sair.")
+                print("Escolha inválida. Digite um número, 'p', '+', '-' ou 's' para sair.")
                 continue
 
             if 0 <= indice < len(musicas):

@@ -4,6 +4,7 @@ import json
 import gc
 import machine
 import ubinascii
+import _thread
 from machine import Pin, PWM
 from umqtt import MQTTClient
 
@@ -26,8 +27,7 @@ TOPICO_SYNC_REQ = b"projeto/orquestra/sync/req"
 TOPICO_SYNC_RES = b"projeto/orquestra/sync/res"
 TOPICO_SYNC_ADJ = b"projeto/orquestra/sync/adj"
 
-offset_tempo = 0 # Guarda o ajuste calculado pelo Berkeley
-deve_tocar_musica = False
+offset_tempo = 0  # Guarda o ajuste calculado pelo Berkeley
 
 def tempo_global_atual():
     # Relógio Global = Relógio de Hardware + Ajuste do Maestro
@@ -62,101 +62,189 @@ notas_padrao = {
 }
 
 # ==========================================
-# 4. MOTOR DE ÁUDIO (À Prova de Falhas de Memória)
+# 4. ESTADO DE EXECUÇÃO / CONTROLE (compartilhado entre threads)
 # ==========================================
-def tocar_passo(notas, tempos, bpm):
+# A música toca em uma thread própria (_thread), enquanto a thread principal
+# continua chamando client.check_msg() e pode reagir a comandos (STOP,
+# VOLUME_UP, VOLUME_DOWN) que chegam pelo MQTT SEM esperar a música acabar.
+DUTY_MIN = 0
+DUTY_MAX = 1000
+VOLUME_PASSO_PADRAO = 100
+
+duty_atual = 300      # "volume" atual (duty cycle do PWM), compartilhado
+tocando = False        # True enquanto a thread de reprodução está ativa
+parar_flag = False     # sinalizado por STOP para interromper a música
+
+# Protege buzzers_ativos e duty_atual, que são lidos/escritos tanto pela
+# thread de reprodução (tocar_passo) quanto pela thread principal (ajustar_volume)
+lock = _thread.allocate_lock()
+
+# ==========================================
+# 5. MOTOR DE ÁUDIO (À Prova de Falhas de Memória)
+# ==========================================
+def _dormir_interruptivel(duracao_ms):
+    """Dorme em pequenos pedaços, checando parar_flag para poder
+    interromper a nota/pausa atual quase imediatamente após um STOP."""
+    global parar_flag
+    passo_ms = 20
+    decorrido = 0
+    while decorrido < duracao_ms:
+        if parar_flag:
+            return True
+        fatia = passo_ms if (duracao_ms - decorrido) > passo_ms else (duracao_ms - decorrido)
+        time.sleep_ms(fatia)
+        decorrido += fatia
+    return parar_flag
+
+def _desligar_buzzers_ativos():
     global buzzers_ativos
+    lock.acquire()
+    try:
+        for b in buzzers_ativos:
+            try:
+                b.duty(0)
+                b.deinit()
+            except:
+                pass
+        buzzers_ativos.clear()
+    finally:
+        lock.release()
+
+def ajustar_volume(delta):
+    """Chamada pela thread principal (a partir do callback MQTT) para
+    aumentar/diminuir o volume. É rápida (só mexe numa lista de até 3
+    PWMs) e por isso não desincroniza a thread que está tocando a música."""
+    global duty_atual
+    lock.acquire()
+    try:
+        novo_duty = duty_atual + delta
+        if novo_duty < DUTY_MIN:
+            novo_duty = DUTY_MIN
+        if novo_duty > DUTY_MAX:
+            novo_duty = DUTY_MAX
+        duty_atual = novo_duty
+        for b in buzzers_ativos:
+            try:
+                b.duty(duty_atual)
+            except:
+                pass
+    finally:
+        lock.release()
+    print(f"Volume ajustado! duty={duty_atual}")
+
+def tocar_passo(notas, tempos, bpm):
+    global buzzers_ativos, duty_atual
     segundos_por_batida = 60.0 / bpm
-    duracao_segundos = tempos * segundos_por_batida
+    duracao_ms = int(tempos * segundos_por_batida * 1000)
 
     if notas == "pausa":
-        time.sleep(duracao_segundos)
-        return
-        
-    for i in range(len(notas)):
-        if i < 3: 
-            nota = notas[i]
-            if nota in notas_padrao:
-                buzzer = PWM(pinos[i], freq=notas_padrao[nota], duty=300)
-                buzzers_ativos.append(buzzer)
+        return _dormir_interruptivel(duracao_ms)
 
-    time.sleep(duracao_segundos)
+    lock.acquire()
+    try:
+        for i in range(len(notas)):
+            if i < 3:
+                nota = notas[i]
+                if nota in notas_padrao:
+                    buzzer = PWM(pinos[i], freq=notas_padrao[nota], duty=duty_atual)
+                    buzzers_ativos.append(buzzer)
+    finally:
+        lock.release()
 
-    for b in buzzers_ativos:
-        try:
-            b.duty(0)
-            b.deinit()
-        except:
-            pass
-            
-    buzzers_ativos.clear()
-    time.sleep(0.02) 
+    interrompido = _dormir_interruptivel(duracao_ms)
+
+    _desligar_buzzers_ativos()
+    time.sleep_ms(20)
+    return interrompido
 
 def reproduzir_musica():
-    global partitura_atual, bpm_atual
+    global partitura_atual, bpm_atual, tocando, parar_flag
     print(f"Tocando a {bpm_atual} BPM...")
     for passo in partitura_atual:
-        # passo[0] são as notas, passo[1] é o tempo
-        tocar_passo(passo[0], passo[1], bpm_atual)
-    print("Música finalizada! Aguardando novas ordens...")
-    
-    for b in buzzers_ativos:
-        try:
-            b.duty(0)
-            b.deinit()
-        except Exception as e:
-            print(f"Erro ao limpar PWM: {e}")
-            
-    print("Música finalizada e timers liberados com sucesso.")
+        if parar_flag:
+            break
+        interrompido = tocar_passo(passo[0], passo[1], bpm_atual)
+        if interrompido:
+            break
+
+    # Segurança extra: garante que nenhum buzzer fica ligado ao sair
+    _desligar_buzzers_ativos()
+
+    if parar_flag:
+        print("Música interrompida por comando STOP.")
+    else:
+        print("Música finalizada! Aguardando novas ordens...")
+
+    parar_flag = False
+    tocando = False
+
+def _executar_reproducao_agendada(start_at):
+    """Roda em thread separada: espera o instante sincronizado combinado
+    com o maestro e então toca a partitura, sem bloquear a thread
+    principal (que continua escutando STOP/VOLUME via MQTT)."""
+    global tocando, parar_flag
+    while tempo_global_atual() < start_at:
+        if parar_flag:
+            # Comando STOP chegou antes mesmo da música começar
+            parar_flag = False
+            tocando = False
+            print("Início cancelado por comando STOP.")
+            return
+        time.sleep_ms(1)
+
+    if len(partitura_atual) > 0:
+        reproduzir_musica()
+    else:
+        tocando = False
 
 # ==========================================
-# 5. CONEXÃO WI-FI
+# 6. CONEXÃO WI-FI
 # ==========================================
 def conectar_wifi():
     wlan = network.WLAN(network.STA_IF)
-    
+
     # --- LIMPEZA DE ESTADO DO WI-FI ---
     # Desliga a antena e limpa tentativas de conexão anteriores
     wlan.active(False)
     time.sleep(0.5)
-    
+
     wlan.active(True)
-    wlan.disconnect() # Garante que está desconectado antes de tentar conectar
+    wlan.disconnect()  # Garante que está desconectado antes de tentar conectar
     time.sleep(0.5)
     # ----------------------------------
-    
+
     if not wlan.isconnected():
         print(f"Conectando à rede {WIFI_SSID}...")
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        
+
         # Adiciona um limite de tempo para não travar para sempre
         tentativas = 0
         while not wlan.isconnected() and tentativas < 20:
             time.sleep(0.5)
             print(".", end="")
             tentativas += 1
-            
+
         if wlan.isconnected():
             print("\nWi-Fi Conectado! IP:", wlan.ifconfig()[0])
         else:
             print("\nErro: Tempo esgotado! Verifique o nome e a senha da rede Wi-Fi.")
 
 # ==========================================
-# 6. LÓGICA DO MQTT (Ouvido do Músico)
+# 7. LÓGICA DO MQTT (Ouvido do Músico)
 # ==========================================
 def callback_mensagem(topico, msg):
     global partitura_atual, bpm_atual, offset_tempo
-    global deve_tocar_musica
-    
+    global tocando, parar_flag
+
     topico_str = topico.decode('utf-8')
     msg_str = msg.decode('utf-8')
-    
+
     # 1. Maestro pediu que horas são
     if topico_str == TOPICO_SYNC_REQ.decode('utf-8'):
         resposta = json.dumps({"id": CLIENT_ID, "t": time.ticks_ms()})
         cliente_mqtt.publish(TOPICO_SYNC_RES, resposta)
         print("Relógio local enviado para o Maestro.")
-        
+
     # 2. Maestro enviou o ajuste do relógio
     elif topico_str == TOPICO_SYNC_ADJ.decode('utf-8'):
         dados = json.loads(msg_str)
@@ -179,24 +267,43 @@ def callback_mensagem(topico, msg):
             print(f"Partitura recebida para {CLIENT_ID}. Aguardando comando START...")
         except ValueError:
             print("Erro ao ler o JSON da partitura.")
-            
-    # 4. Maestro enviou a ordem de início agendada
+
+    # 4. Comandos do maestro: START / STOP / VOLUME_UP / VOLUME_DOWN
     elif topico_str == TOPICO_COMANDO.decode('utf-8'):
         try:
             dados = json.loads(msg_str)
-            if dados.get("comando") == "START":
-                start_at = dados.get("start_at")
-                deve_tocar_musica = True
-                print(f"Ordem recebida! A música começará no instante global: {start_at}")
-                
-                # Trava o processador em um loop muito rápido até atingir a hora certa
-                while tempo_global_atual() < start_at:
-                    time.sleep(0.001) # Espera 1ms por ciclo
-                    
-                if len(partitura_atual) > 0:
-                    reproduzir_musica()
         except ValueError:
-            pass # Ignora mensagens fora do padrão JSON
+            return  # Ignora mensagens fora do padrão JSON
+
+        comando = dados.get("comando")
+
+        if comando == "START":
+            start_at = dados.get("start_at")
+            print(f"Ordem recebida! A música começará no instante global: {start_at}")
+            if tocando:
+                print("Já existe uma música em execução, ignorando novo START.")
+                return
+            tocando = True
+            parar_flag = False
+            # Roda a espera sincronizada + a reprodução em uma thread própria,
+            # para que a thread principal (main loop / check_msg) continue
+            # livre para receber STOP e VOLUME_UP/DOWN durante a música.
+            _thread.start_new_thread(_executar_reproducao_agendada, (start_at,))
+
+        elif comando == "STOP":
+            if tocando:
+                parar_flag = True
+                print("Comando STOP recebido! Interrompendo a música...")
+            else:
+                print("Comando STOP recebido, mas nenhuma música está tocando.")
+
+        elif comando == "VOLUME_UP":
+            passo = dados.get("passo", VOLUME_PASSO_PADRAO)
+            ajustar_volume(passo)
+
+        elif comando == "VOLUME_DOWN":
+            passo = dados.get("passo", VOLUME_PASSO_PADRAO)
+            ajustar_volume(-passo)
 
 def conectar_mqtt():
     try:
@@ -217,33 +324,32 @@ def conectar_mqtt():
         machine.reset()
 
 # ==========================================
-# 7. LOOP PRINCIPAL
+# 8. LOOP PRINCIPAL
 # ==========================================
 conectar_wifi()
 cliente_mqtt = conectar_mqtt()
 
 print("Músico posicionado. Aguardando a partitura e a batuta do maestro...")
 
+tocando_anterior = False
+
 try:
     while True:
-        cliente_mqtt.check_msg() # Ouve o maestro
-        
-        # Se a flag de tocar música for ativada
-        if deve_tocar_musica:
-            deve_tocar_musica = False
-            # Força a limpeza da RAM e dos processos órfãos logo após tocar
-            gc.collect() 
-            
+        cliente_mqtt.check_msg()  # Ouve o maestro (partitura, START, STOP, VOLUME...)
+
+        # Quando a thread de reprodução termina (tocando: True -> False),
+        # aproveita para limpar a memória.
+        if tocando_anterior and not tocando:
+            gc.collect()
+        tocando_anterior = tocando
+
 except KeyboardInterrupt:
     print("\nDesconectando...")
 except OSError as e:
     print("Erro de rede. Reconectando...")
 finally:
-    # Segurança de sempre: libera os pinos
-    for b in buzzers_ativos:
-        try:
-            b.duty(0)
-            b.deinit()
-        except:
-            pass
+    # Segurança de sempre: pede para a thread de reprodução parar e libera os pinos
+    parar_flag = True
+    time.sleep_ms(50)
+    _desligar_buzzers_ativos()
     cliente_mqtt.disconnect()
