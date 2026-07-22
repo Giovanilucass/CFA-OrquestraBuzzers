@@ -8,6 +8,7 @@ import _thread
 from machine import Pin, PWM
 from typing import Any, List, Union
 from umqtt import MQTTClient
+from display import DisplayFeedback
 
 # ==========================================
 # 1. CONFIGURAÇÕES DE REDE E MQTT
@@ -176,32 +177,6 @@ def tocar_passo(notas: Union[str, List[str]], tempos: float, bpm: int) -> bool:
     time.sleep_ms(20)
     return interrompido
 
-def reproduzir_musica() -> None:
-    """Reproduz sequencialmente a `partitura_atual` global.
-
-    Respeita `parar_flag` para interromper a reprodução. Garante que os buzzers
-    sejam desligados ao sair e limpa o estado `tocando`.
-    """
-    global partitura_atual, bpm_atual, tocando, parar_flag
-    print(f"Tocando a {bpm_atual} BPM...")
-    for passo in partitura_atual:
-        if parar_flag:
-            break
-        interrompido = tocar_passo(passo[0], passo[1], bpm_atual)
-        if interrompido:
-            break
-
-    # Segurança extra: garante que nenhum buzzer fica ligado ao sair
-    _desligar_buzzers_ativos()
-
-    if parar_flag:
-        print("Música interrompida por comando STOP.")
-    else:
-        print("Música finalizada! Aguardando novas ordens...")
-
-    parar_flag = False
-    tocando = False
-
 def _executar_reproducao_agendada(start_at):
     """Roda em thread separada: espera o instante sincronizado combinado
     com o maestro e então toca a partitura, sem bloquear a thread
@@ -220,9 +195,48 @@ def _executar_reproducao_agendada(start_at):
         reproduzir_musica()
     else:
         tocando = False
+# ==========================================
+# 6. DISPLAY (Feedback Visual)
+# ==========================================
+tela = DisplayFeedback(scl_pin=22, sda_pin=21)
+
+def reproduzir_musica() -> None:
+    """Reproduz sequencialmente a `partitura_atual` global e envia dados ao display."""
+    global partitura_atual, bpm_atual, tocando, parar_flag
+    print(f"Tocando a {bpm_atual} BPM...")
+
+    # Garante que a tela comece limpa a cada nova música
+    tela.reiniciar_tela()
+
+    for passo in partitura_atual:
+        if parar_flag:
+            break
+            
+        notas_passo = passo[0]
+        tempos = passo[1]
+
+        # ----------------------------------------------------
+        # FEEDBACK VISUAL: O display se vira com o estado dele!
+        # ----------------------------------------------------
+        tela.registrar_acorde(notas_passo)
+
+        # Toca o áudio de fato
+        interrompido = tocar_passo(notas_passo, tempos, bpm_atual)
+        if interrompido:
+            break
+
+    _desligar_buzzers_ativos()
+
+    if parar_flag:
+        print("Música interrompida por comando STOP.")
+    else:
+        print("Música finalizada! Aguardando novas ordens...")
+
+    parar_flag = False
+    tocando = False
 
 # ==========================================
-# 6. CONEXÃO WI-FI
+# 7. CONEXÃO WI-FI
 # ==========================================
 def conectar_wifi() -> None:
     wlan = network.WLAN(network.STA_IF)
@@ -254,7 +268,7 @@ def conectar_wifi() -> None:
             print("\nErro: Tempo esgotado! Verifique o nome e a senha da rede Wi-Fi.")
 
 # ==========================================
-# 7. LÓGICA DO MQTT (Ouvido do Músico)
+# 8. LÓGICA DO MQTT (Ouvido do Músico)
 # ==========================================
 def callback_mensagem(topico: bytes, msg: bytes) -> None:
     """Callback MQTT que processa sincronização, partitura e comandos de controle.
@@ -353,7 +367,7 @@ def conectar_mqtt() -> Any:
         machine.reset()
 
 # ==========================================
-# 8. LOOP PRINCIPAL
+# 9. LOOP PRINCIPAL
 # ==========================================
 conectar_wifi()
 cliente_mqtt = conectar_mqtt()
