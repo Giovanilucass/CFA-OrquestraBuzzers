@@ -6,15 +6,14 @@ import machine
 import ubinascii
 import _thread
 from machine import Pin, PWM
-from typing import Any, List, Union
 from umqtt import MQTTClient
 from display import DisplayFeedback
 
 # ==========================================
 # 1. CONFIGURAÇÕES DE REDE E MQTT
 # ==========================================
-WIFI_SSID = "lab8"
-WIFI_PASSWORD = "lab8arduino"
+WIFI_SSID = "lab9"
+WIFI_PASSWORD = "lab9arduino"
 
 BROKER_MQTT = "broker.hivemq.com"
 
@@ -47,7 +46,7 @@ bpm_atual = 120
 # ==========================================
 # 2. LIMPEZA E CONFIGURAÇÃO DOS PINOS
 # ==========================================
-pinos = [Pin(0, Pin.OUT), Pin(2, Pin.OUT), Pin(5, Pin.OUT)]
+pinos = [Pin(0, Pin.OUT), Pin(2, Pin.OUT), Pin(3, Pin.OUT)]
 for p in pinos:
     try:
         PWM(p).deinit()
@@ -198,7 +197,7 @@ def _executar_reproducao_agendada(start_at):
 # ==========================================
 # 6. DISPLAY (Feedback Visual)
 # ==========================================
-tela = DisplayFeedback(scl_pin=22, sda_pin=21)
+tela = DisplayFeedback(scl_pin=6, sda_pin=5)
 
 def reproduzir_musica() -> None:
     """Reproduz sequencialmente a `partitura_atual` global e envia dados ao display."""
@@ -229,8 +228,11 @@ def reproduzir_musica() -> None:
 
     if parar_flag:
         print("Música interrompida por comando STOP.")
+        tela.reiniciar_tela()
     else:
         print("Música finalizada! Aguardando novas ordens...")
+        time.sleep(1.5)
+        tela.reiniciar_tela()
 
     parar_flag = False
     tocando = False

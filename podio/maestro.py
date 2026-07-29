@@ -16,7 +16,6 @@ TOPICO_SYNC_ADJ = "projeto/orquestra/sync/adj"
 # Passo padrão de volume (duty). O duty dos buzzers vai de 0 até 1000.
 VOLUME_PASSO_PADRAO = 100
 
-
 class Maestro:
     """Controlador Maestro: lê partituras, sincroniza músicos e publica comandos.
 
