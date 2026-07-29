@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Projeto Orquestra</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <button id="menuButton" class="btn btn-dark menu-button" type="button" aria-label="Abrir menu" aria-expanded="false">☰</button>
+
+  <aside id="sidebar" class="sidebar" aria-label="Menu principal">
+    <h1 class="sidebar-title"></h1>
+    <nav>
+      <button class="menu-item active" data-screen="editor" type="button"><span>𝄞</span><strong>Editor de Partituras</strong></button>
+      <button class="menu-item" data-screen="library" type="button"><span>🎼</span><strong>Estante de Partituras</strong></button>
+    </nav>
+  </aside>
+
+  <main class="main-content">
+    <section id="editor" class="screen active-screen">
+      <div class="container-fluid py-4">
+        <header class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+          <div><small class="text-primary fw-bold">EDITOR</small><h2 class="mb-0">Partituras</h2></div>
+          <div class="d-flex gap-2 flex-wrap">
+            <span class="badge text-bg-primary">Músicos: <b id="musicianCount">2</b></span>
+            <span class="badge text-bg-secondary">Acordes: <b id="eventCount">0</b></span>
+          </div>
+        </header>
+
+        <div class="card shadow-sm mb-4"><div class="card-body row g-3 align-items-end">
+          <div class="col-lg-4"><label for="scoreName" class="form-label">Nome da música</label><input id="scoreName" class="form-control" value="Música" maxlength="80"></div>
+          <div class="col-sm-4 col-lg-2"><label for="slotCount" class="form-label">Posições</label><input id="slotCount" class="form-control" type="number" min="4" max="128" step="4" value="16"></div>
+          <div class="col-sm-4 col-lg-2"><button id="previewButton" class="btn btn-outline-primary w-100" type="button">▶ Visualizar</button></div>
+          <div class="col-sm-4 col-lg-2"><button id="saveButton" class="btn btn-primary w-100" type="button">💾 Salvar</button></div>
+          <div class="col-lg-2"><button id="downloadButton" class="btn btn-outline-success w-100" type="button">⬇ JSON</button></div>
+        </div></div>
+
+        <div class="row g-4">
+          <div class="col-xl-3">
+            <div class="card shadow-sm mb-4"><div class="card-body">
+              <h3 class="h5">Acordes</h3>
+              <p class="small text-secondary">Selecione um acorde e clique em uma posição.</p>
+              <div id="chordPalette" class="chord-palette"></div>
+              <button id="restButton" class="btn btn-outline-secondary w-100 mt-3" type="button">Inserir pausa</button>
+              <button id="clearButton" class="btn btn-outline-danger w-100 mt-2" type="button">Limpar partitura</button>
+            </div></div>
+
+            <div class="card shadow-sm"><div class="card-body">
+              <div class="d-flex justify-content-between align-items-center"><h3 class="h5 mb-0">Músicos</h3><button id="addMusicianButton" class="btn btn-sm btn-primary" type="button">＋</button></div>
+              <p class="small text-secondary mt-2">Por padrão, todos os músicos participam de cada novo acorde.</p>
+              <div id="musicianList" class="d-grid gap-2"></div>
+            </div></div>
+          </div>
+
+          <div class="col-xl-9">
+            <div class="card shadow-sm mb-4"><div class="card-body">
+              <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+                <div><h3 class="h5 mb-0">Música</h3><small id="slotCounter" class="text-secondary"></small></div>
+                <span class="selected-label">Selecionado: <strong id="selectedChordLabel">C</strong></span>
+              </div>
+              <div class="staff-wrapper"><div id="staff" class="staff" aria-label="Linha do tempo da partitura"></div></div>
+              <p class="small text-secondary mt-3 mb-0">Clique numa posição para configurar. Botão direito remove.</p>
+            </div></div>
+
+            <div class="card shadow-sm event-config"><div class="card-body">
+              <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+                <div><h3 class="h5 mb-0">Configuração</h3><small id="eventInfo" class="text-secondary">Selecione uma posição.</small></div>
+                <div class="duration-control"><label for="duration" class="form-label mb-1">Duração</label><select id="duration" class="form-select form-select-sm"><option value="0.25">1/4</option><option value="0.5">1/2</option><option value="1" selected>1</option><option value="2">2</option><option value="4">4</option></select></div>
+              </div>
+              <div id="musicianAssignments" class="row g-3"></div>
+            </div></div>
+
+            <div class="card shadow-sm mt-4"><div class="card-body">
+              <div class="d-flex justify-content-between align-items-center mb-2"><h3 class="h5 mb-0">Prévia do JSON</h3></div>
+              <pre id="jsonPreview" class="json-preview"></pre>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="library" class="screen"><div class="container-fluid py-4">
+      <div class="d-flex justify-content-between align-items-center mb-4"><div><small class="text-primary fw-bold">BIBLIOTECA</small><h2 class="mb-0">Partituras salvas</h2></div><button id="newScoreButton" class="btn btn-primary" type="button">＋ Nova</button></div>
+      <div id="savedScores" class="row g-4"></div>
+    </div></section>
+  </main>
+
+  <div id="toastMessage" class="app-toast" role="status" aria-live="polite"></div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="js/script.js"></script>
+</body>
+</html>
